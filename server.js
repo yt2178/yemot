@@ -4,10 +4,10 @@ import fetch from "node-fetch";
 
 const app = express();
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true })); // ← הוספנו את זה
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
 
-// נקודת קצה לקבלת שאלה מימות המשיח
 app.post("/ask", async (req, res) => {
   try {
     const question = req.body.stt || "לא קיבלתי שאלה";
@@ -34,7 +34,6 @@ app.post("/ask", async (req, res) => {
   }
 });
 
-// נקודת קצה לתשובות
 app.post("/answer", (req, res) => {
   res.json({ tts: "התשובה מוכנה" });
 });
