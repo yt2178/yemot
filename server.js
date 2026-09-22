@@ -1,6 +1,6 @@
 import express from 'express';
 import { YemotRouter, ExitError } from 'yemot-router2';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import YemotApi from 'yemot-api';
 
 const app = express();
@@ -40,10 +40,22 @@ async function addConversationEntry({phone,callId,userText,geminiText}){const en
 function sanitizeForYemot(text){if(!text)return '';return String(text).replace(/[."“”‘’']/g,' ').replace(/[-–—]/g,' ').replace(/\s+/g,' ').trim();}
 function withTimeout(promise,ms,label){let timeoutId;const timeoutPromise=new Promise((_,reject)=>{timeoutId=setTimeout(()=>{const e=new Error(`Timeout after ${ms}ms: ${label}`);e.status=408;e.isTimeout=true;reject(e);},ms);});return Promise.race([promise,timeoutPromise]).finally(()=>clearTimeout(timeoutId));}
 function logDetailedError(context,err){console.error('['+context+']',err?.message||err);}
-const genAIClients=apiKeys.map(key=>new GoogleGenerativeAI(key));
-const modelsByName=MODEL_NAMES.map(name=>genAIClients.map(ai=>ai.getGenerativeModel({model:name})));
-const webModelsByName=MODEL_NAMES.map(name=>genAIClients.map(ai=>ai.getGenerativeModel({model:name,tools:[{googleSearch:{}}]})));
-async function generateWithRetry(contents,useWebSearch=false){if(!modelsByName.length||!modelsByName[0]?.length)throw Object.assign(new Error('Gemini is not configured'),{status:400});const groups=useWebSearch?webModelsByName:modelsByName;let lastError;for(let mi=0;mi<groups.length;mi++)for(let ki=0;ki<groups[mi].length;ki++){try{return await withTimeout(groups[mi][ki].generateContent(contents),REQUEST_TIMEOUT_MS,`${MODEL_NAMES[mi]} key #${ki+1}`);}catch(e){lastError=e;if(![404,503,429,500,408].includes(e.status))throw e;await new Promise(r=>setTimeout(r,300));}}throw lastError;}
+const genAIClients=apiKeys.map(key=>new GoogleGenAI({apiKey:key}));
+async function generateWithRetry(contents,useWebSearch=false){
+ if(!genAIClients.length) throw Object.assign(new Error('Gemini is not configured'),{status:400});
+ let lastError;
+ for(let mi=0;mi<MODEL_NAMES.length;mi++) for(let ki=0;ki<genAIClients.length;ki++){
+  try{
+   const config=useWebSearch?{tools:[{googleSearch:{}}]}:undefined;
+   return await withTimeout(genAIClients[ki].models.generateContent({model:MODEL_NAMES[mi],contents,config}),REQUEST_TIMEOUT_MS,MODEL_NAMES[mi]+' key #'+(ki+1));
+  }catch(e){
+   lastError=e;
+   if(![404,503,429,500,408].includes(e.status)) throw e;
+   await new Promise(r=>setTimeout(r,300));
+  }
+ }
+ throw lastError;
+}
 const yemotApi=new YemotApi(process.env.YEMOT_API_USERNAME,process.env.YEMOT_API_PASSWORD);
 const router=YemotRouter({printLog:true,defaults:{removeInvalidChars:true},uncaughtErrorHandler:e=>logDetailedError('call handler',e)});
 function audioParts(audioBase64){return [{inlineData:{mimeType:process.env.YEMOT_AUDIO_MIME_TYPE||'audio/wav',data:audioBase64}}];}
