@@ -1,7 +1,27 @@
 services:
   - type: web
-    name: gemini-yemot-basic
-    env: node
-    buildCommand: "npm install"
-    startCommand: "node server.js"
+    name: yemot
+    runtime: node
     plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: YEMOT_API_USERNAME
+        sync: false
+      - key: YEMOT_API_PASSWORD
+        sync: false
+      - key: YEMOT_API_KEY
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: YEMOT_AI_EXTENSION
+        sync: false
