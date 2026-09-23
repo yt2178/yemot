@@ -1,7 +1,6 @@
 import express from 'express';
 import { YemotRouter, ExitError } from 'yemot-router2';
 import { GoogleGenAI } from '@google/genai';
-import YemotApi from 'yemot-api';
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -41,6 +40,22 @@ function sanitizeForYemot(text){if(!text)return '';return String(text).replace(/
 function withTimeout(promise,ms,label){let timeoutId;const timeoutPromise=new Promise((_,reject)=>{timeoutId=setTimeout(()=>{const e=new Error(`Timeout after ${ms}ms: ${label}`);e.status=408;e.isTimeout=true;reject(e);},ms);});return Promise.race([promise,timeoutPromise]).finally(()=>clearTimeout(timeoutId));}
 function logDetailedError(context,err){console.error('['+context+']',err?.message||err);}
 const genAIClients=apiKeys.map(key=>new GoogleGenAI({apiKey:key}));
+const YEMOT_API_BASE='https://www.call2all.co.il/ym/api';
+const YEMOT_TOKEN=(process.env.YEMOT_API_KEY||'').trim()||[process.env.YEMOT_API_USERNAME||'',process.env.YEMOT_API_PASSWORD||''].join(':');
+async function downloadYemotFile(path){
+ const qs=new URLSearchParams({token:YEMOT_TOKEN,path});
+ const response=await withTimeout(fetch(YEMOT_API_BASE+'/DownloadFile?'+qs),REQUEST_TIMEOUT_MS,'Yemot DownloadFile');
+ if(!response.ok)throw new Error('Yemot DownloadFile HTTP '+response.status+': '+await response.text());
+ return Buffer.from(await response.arrayBuffer());
+}
+function normalizeYemotRecordingPath(path){
+ let p=String(path||'').trim();
+ if(!p)throw new Error('Empty recording path returned by Yemot');
+ if(/^ivr2:/i.test(p))return p;
+ if(p.startsWith('/'))return 'ivr2:'+p;
+ return 'ivr2:/'+p.replace(/^\/+/, '');
+}
+
 async function generateWithRetry(contents,useWebSearch=false){
  if(!genAIClients.length) throw Object.assign(new Error('Gemini is not configured'),{status:400});
  let lastError;
@@ -56,7 +71,6 @@ async function generateWithRetry(contents,useWebSearch=false){
  }
  throw lastError;
 }
-const yemotApi=new YemotApi(process.env.YEMOT_API_USERNAME,process.env.YEMOT_API_PASSWORD);
 const router=YemotRouter({printLog:true,defaults:{removeInvalidChars:true},uncaughtErrorHandler:e=>logDetailedError('call handler',e)});
 function audioParts(audioBase64){return [{inlineData:{mimeType:process.env.YEMOT_AUDIO_MIME_TYPE||'audio/wav',data:audioBase64}}];}
 async function answerNormalQuestion(audioBase64){const prompt=`${EXCLUSIVE_INSTRUCTION}
@@ -78,19 +92,30 @@ app.get('/health',(req,res)=>res.json({ok:true}));
 app.get('/',(req,res)=>res.type('html').send('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>AI Phone Line</title></head><body><h1>AI Phone Line Dashboard</h1><p>המערכת מחוברת וממתינה לשיחות</p></body></html>'));
 
 async function configureYemotStructure(){
- const token=process.env.YEMOT_API_KEY?.trim();if(!token){console.log('YEMOT_API_KEY not configured; skipping automatic setup');return;}
- const publicUrl=(process.env.PUBLIC_BASE_URL||'').replace(/\/$/,'');if(!publicUrl){console.log('PUBLIC_BASE_URL missing; skipping automatic IVR URL setup');return;}
- const base='https://www.call2all.co.il/ym/api';
- async function yemotGet(action,params={}){const qs=new URLSearchParams({token,...params});const r=await fetch(`${base}/${action}?${qs}`);const text=await r.text();if(!r.ok)throw new Error(`${action} HTTP ${r.status}: ${text}`);let data;try{data=JSON.parse(text)}catch{data={raw:text}};if(data.responseStatus&&String(data.responseStatus).toUpperCase()!=='OK')throw new Error(`${action} failed: ${text}`);return data;}
- async function updateExtension(path,params){return yemotGet('UpdateExtension',{path,...params});}
- const tree=await yemotGet('GetIvrTree',{path:'ivr2:/'});
- const items=Array.isArray(tree.items)?tree.items:[];
- const used=new Set(items.map(x=>String(x.name||'').replace(/\/$/,'')).filter(x=>/^\d+$/.test(x)));
- let extension=String(process.env.YEMOT_AI_EXTENSION||'');
- if(!/^\d+$/.test(extension)||used.has(extension)){for(let n=1;n<=999;n++){if(!used.has(String(n))){extension=String(n);break;}}}
- await updateExtension(`ivr2:/${extension}`,{type:'api',api_link:publicUrl+'/yemot'});
- console.log(`Yemot AI extension configured: /${extension} -> ${publicUrl}/yemot`);
+ if(!YEMOT_TOKEN||YEMOT_TOKEN.endsWith(':')){console.log('Yemot token not configured; skipping automatic setup');return;}
+ const publicUrl=(process.env.PUBLIC_BASE_URL||'').replace(/\/$/,'');
+ if(!publicUrl){console.log('PUBLIC_BASE_URL missing; skipping automatic IVR URL setup');return;}
+ async function yemotApiJson(action,params={}){
+  const qs=new URLSearchParams({token:YEMOT_TOKEN,...params});
+  const r=await withTimeout(fetch(YEMOT_API_BASE+'/'+action+'?'+qs),REQUEST_TIMEOUT_MS,'Yemot '+action);
+  const t=await r.text(); if(!r.ok)throw new Error(action+' HTTP '+r.status+': '+t);
+  let d;try{d=JSON.parse(t)}catch{throw new Error(action+' returned non-JSON: '+t.slice(0,200))}
+  if(d.responseStatus&&String(d.responseStatus).toUpperCase()!=='OK')throw new Error(action+' failed: '+(d.message||t));
+  return d;
+ }
+ let extension=String(process.env.YEMOT_AI_EXTENSION||'').trim();
+ if(!/^\d+$/.test(extension)){
+  const root=await yemotApiJson('GetIVR2Dir',{path:'ivr2:/'});
+  const files=Array.isArray(root.files)?root.files:[];
+  const used=new Set(files.map(x=>String(x.name||'').replace(/\/$/,'')).filter(x=>/^\d+$/.test(x)));
+  for(let n=1;n<=999;n++){if(!used.has(String(n))){extension=String(n);break;}}
+ }
+ if(!extension)throw new Error('Could not find an unused Yemot extension');
+ await yemotApiJson('UpdateExtension',{path:'ivr2:/'+extension,type:'api',api_link:publicUrl+'/yemot'});
+ console.log('Yemot AI extension configured: /'+extension+' -> '+publicUrl+'/yemot');
+ console.log('YEMOT_AI_EXTENSION='+extension);
 }
+
 process.on('unhandledRejection',reason=>{if(!(reason instanceof ExitError))logDetailedError('Unhandled Rejection',reason)});
 process.on('uncaughtException',err=>{if(!(err instanceof ExitError))logDetailedError('Uncaught Exception',err)});
 const port=process.env.PORT||3000;
