@@ -1,6 +1,9 @@
 import express from 'express';
 import { YemotRouter, ExitError } from 'yemot-router2';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, createUserContent, createPartFromUri } from '@google/genai';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -9,7 +12,7 @@ app.use(express.json());
 const apiKeys = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
 if (!apiKeys.length) console.warn('Gemini is not configured yet. Set GEMINI_API_KEYS.');
 const MODEL_NAMES = (process.env.GEMINI_MODELS || 'gemini-2.5-flash-lite').split(',').map(x => x.trim()).filter(Boolean);
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 20000);
 
 const CONTENT_FILTER_INSTRUCTION = `כלל סינון תוכן מחייב: אין לספק, לעודד או לפרט תוכן שאינו תואם ערכי צניעות וחינוך.
 יש להימנע מתוכן מיני או אירוטי, תיאורים מיניים, פורנוגרפיה, עירום מיני, פנטזיות מיניות ותוכן שמטרתו גירוי מיני. יש להימנע גם מאלימות גרפית, סמים, הימורים, פגיעה עצמית ותקיפה.
@@ -72,19 +75,51 @@ async function generateWithRetry(contents,useWebSearch=false){
  throw lastError;
 }
 const router=YemotRouter({printLog:true,defaults:{removeInvalidChars:true},uncaughtErrorHandler:e=>logDetailedError('call handler',e)});
-function audioParts(audioBase64){return [{inlineData:{mimeType:process.env.YEMOT_AUDIO_MIME_TYPE||'audio/wav',data:audioBase64}}];}
+function responseText(result){
+ const text=result?.text ?? result?.response?.text?.();
+ if(typeof text==='string' && text.trim()) return text.trim();
+ const parts=result?.candidates?.flatMap(c=>c?.content?.parts||[])||[];
+ const fallback=parts.map(p=>p?.text||'').filter(Boolean).join(' ').trim();
+ if(fallback) return fallback;
+ throw new Error('Gemini returned no text');
+}
+function audioMimeType(){return process.env.YEMOT_AUDIO_MIME_TYPE||'audio/wav';}
+async function generateFromAudioFile(audioBase64,prompt,useWebSearch=false){
+ const tempPath=path.join(os.tmpdir(),'yemot-'+Date.now()+'-'+Math.random().toString(16).slice(2)+'.wav');
+ let uploaded=null;
+ try{
+  await fs.writeFile(tempPath,Buffer.from(audioBase64,'base64'));
+  const client=genAIClients[0];
+  if(!client) throw Object.assign(new Error('Gemini is not configured'),{status:400});
+  const started=Date.now();
+  uploaded=await withTimeout(client.files.upload({file:tempPath,config:{mimeType:audioMimeType()}}),REQUEST_TIMEOUT_MS,'Gemini Files upload');
+  console.log('[Gemini] audio uploaded in '+(Date.now()-started)+'ms');
+  const result=await generateWithRetry([
+   createUserContent([
+    createPartFromUri(uploaded.uri,uploaded.mimeType||audioMimeType()),
+    {text:prompt}
+   ])
+  ],useWebSearch);
+  return responseText(result);
+ } finally {
+  await fs.unlink(tempPath).catch(()=>{});
+  if(uploaded?.name){
+   try{await genAIClients[0].files.delete({name:uploaded.name});}catch(e){console.warn('[Gemini] temporary file cleanup failed: '+(e?.message||e));}
+  }
+ }
+}
 async function answerNormalQuestion(audioBase64){const prompt=`${EXCLUSIVE_INSTRUCTION}
 זו הקלטה של שאלה מהמתקשר. האזן להקלטה, הבן את הדיבור בעצמך וענה על השאלה.
 ענה בשפה שבה המתקשר דיבר. התשובה מיועדת להקראה בטלפון.
-אם המתקשר ביקש במפורש לחפש באינטרנט, החזר בתחילת התשובה את הסמן SEARCH_REQUEST בלבד ולאחריו הסבר קצר למה נדרש חיפוש.`;const result=await generateWithRetry([...audioParts(audioBase64),{text:prompt}]);return result.response.text();}
-async function transcribeForDashboard(audioBase64){const result=await generateWithRetry([...audioParts(audioBase64),{text:'תמלל את ההקלטה בעברית לצורך תצוגה בלבד. אל תענה על השאלה. החזר רק את התמלול, ללא הסברים.'}]);return sanitizeForYemot(result.response.text());}
-async function answerWithWebSearch(audioBase64){const result=await generateWithRetry([...audioParts(audioBase64),{text:`${EXCLUSIVE_INSTRUCTION}
-המתקשר ביקש במפורש חיפוש באינטרנט. חפש מידע עדכני ורלוונטי באמצעות Google Search, ואז ענה בעברית על השאלה על סמך המידע שמצאת. אל תציג כתובות אינטרנט.`}],true);return result.response.text();}
+אם המתקשר ביקש במפורש לחפש באינטרנט, החזר בתחילת התשובה את הסמן SEARCH_REQUEST בלבד ולאחריו הסבר קצר למה נדרש חיפוש.`;return generateFromAudioFile(audioBase64,prompt);}
+async function transcribeForDashboard(audioBase64){const text=await generateFromAudioFile(audioBase64,'תמלל את ההקלטה בעברית לצורך תצוגה בלבד. אל תענה על השאלה. החזר רק את התמלול, ללא הסברים.');return sanitizeForYemot(text);}
+async function answerWithWebSearch(audioBase64){const prompt=`${EXCLUSIVE_INSTRUCTION}
+המתקשר ביקש במפורש חיפוש באינטרנט. חפש מידע עדכני ורלוונטי באמצעות Google Search, ואז ענה בעברית על השאלה על סמך המידע שמצאת. אל תציג כתובות אינטרנט.`;return generateFromAudioFile(audioBase64,prompt,true);}
 async function buildOpeningForCaller(phone){const previous=conversationLog.filter(x=>x.phone===normalizePhone(phone)).slice(-8);if(!previous.length)return process.env.FIRST_CALL_MESSAGE||'שלום איך אפשר לעזור לך היום אמור בבקשה על מה תרצה לדבר אחרי הצפצוף ולסיום ההקלטה הקש סולמית';const history=previous.map(x=>'המתקשר: '+x.user+'\nAI: '+x.gemini).join('\n\n');try{const r=await generateWithRetry([{text:`${EXCLUSIVE_INSTRUCTION}
 אתה בתחילת שיחה חדשה עם מתקשר שכבר דיבר איתך בעבר.
 הנה קטעים מהשיחות הקודמות:
 ${history}
-צור פתיח קצר בעברית שמזכיר בקצרה את הנושא האחרון, מאפשר להמשיך משם, ושואל על מה המתקשר רוצה לדבר עכשיו. אל תמציא פרטים. בלי נקודות ובלי מרכאות.`}]);return sanitizeForYemot(r.response.text())||'שלום שוב שמח לשמוע ממך על מה תרצה לדבר עכשיו';}catch{return 'שלום שוב שמח לשמוע ממך על מה תרצה לדבר עכשיו';}}
+צור פתיח קצר בעברית שמזכיר בקצרה את הנושא האחרון, מאפשר להמשיך משם, ושואל על מה המתקשר רוצה לדבר עכשיו. אל תמציא פרטים. בלי נקודות ובלי מרכאות.`}]);return sanitizeForYemot(responseText(r))||'שלום שוב שמח לשמוע ממך על מה תרצה לדבר עכשיו';}catch{return 'שלום שוב שמח לשמוע ממך על מה תרצה לדבר עכשיו';}}
 async function callHandler(call){const callerPhone=getCallerNumber(call);const callId=call?.callId||call?.values?.ApiCallId||'';const activeKey=String(callId||(Date.now()+'-'+callerPhone));activeCalls.set(activeKey,{id:activeKey,phone:callerPhone,callId:String(callId||''),startedAt:new Date().toISOString(),status:'ממתין להקלטה'});let firstTurn=true;let openingPrompt=null;if(conversationLog.some(x=>x.phone===callerPhone))openingPrompt=await buildOpeningForCaller(callerPhone);while(true){const prompt=firstTurn?(openingPrompt||process.env.FIRST_CALL_MESSAGE||'שלום איך אפשר לעזור לך היום אמור בבקשה על מה תרצה לדבר אחרי הצפצוף ולסיום ההקלטה הקש סולמית'):'אמור שאלה נוספת ולסיום הקש סולמית או הקש כוכבית ליציאה';firstTurn=false;const recordPath=await call.read([{type:'text',data:prompt}],'record',{min_length:1,max_length:60,no_confirm_menu:true});if(!recordPath||recordPath==='None')return call.id_list_message([{type:'text',data:'לא נקלט דבר להתראות'}]);const active=activeCalls.get(activeKey);if(active)active.status='הקלטה התקבלה — מעבד';let audioBuffer;try{const response={data:await downloadYemotFile(normalizeYemotRecordingPath(recordPath))};audioBuffer=response.data;}catch(e){logDetailedError('recording download',e);continue;}const audioBase64=Buffer.isBuffer(audioBuffer)?audioBuffer.toString('base64'):Buffer.from(audioBuffer).toString('base64');let replyText;try{if(active)active.status='שולח Audio ל-Gemini וממתין לתשובה';const firstText=(await answerNormalQuestion(audioBase64)).trim();if(firstText.startsWith('SEARCH_REQUEST'))replyText=await answerWithWebSearch(audioBase64);else replyText=firstText;}catch(e){logDetailedError('Gemini processing',e);replyText=e.status===503||e.status===429?'מצטערים אני עמוס כרגע נסה שוב עוד מעט':e.status===408?'מצטערים לקח יותר מדי זמן לענות נסה שוב':'מצטער הייתה תקלה בעיבוד השאלה אפשר לנסות שוב';}replyText=sanitizeForYemot(replyText)||'מצטער לא הצלחתי לנסח תשובה נסה שוב';try{await call.id_list_message([{type:'text',data:replyText}],{prependToNextAction:true});activeCalls.delete(activeKey);}catch(e){logDetailedError('playback',e);await call.id_list_message([{type:'text',data:'מצטער הייתה תקלה בהקראת התשובה'}],{prependToNextAction:true});}transcribeForDashboard(audioBase64).then(transcript=>addConversationEntry({phone:callerPhone,callId,userText:transcript||'לא ניתן היה לתמלל את ההקלטה',geminiText:replyText})).catch(e=>logDetailedError('dashboard transcription',e));}}
 router.get('/yemot',callHandler);
 app.use(router);
