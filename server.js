@@ -8,8 +8,8 @@ app.use(express.json());
 
 const apiKeys = (process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
 if (!apiKeys.length) console.warn('Gemini is not configured yet. Set GEMINI_API_KEYS.');
-const MODEL_NAMES = (process.env.GEMINI_MODELS || 'gemini-2.5-flash').split(',').map(x => x.trim()).filter(Boolean);
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 30000);
+const MODEL_NAMES = (process.env.GEMINI_MODELS || 'gemini-2.5-flash-lite').split(',').map(x => x.trim()).filter(Boolean);
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12000);
 
 const CONTENT_FILTER_INSTRUCTION = `כלל סינון תוכן מחייב: אין לספק, לעודד או לפרט תוכן שאינו תואם ערכי צניעות וחינוך.
 יש להימנע מתוכן מיני או אירוטי, תיאורים מיניים, פורנוגרפיה, עירום מיני, פנטזיות מיניות ותוכן שמטרתו גירוי מיני. יש להימנע גם מאלימות גרפית, סמים, הימורים, פגיעה עצמית ותקיפה.
@@ -39,7 +39,7 @@ async function addConversationEntry({phone,callId,userText,geminiText}){const en
 function sanitizeForYemot(text){if(!text)return '';return String(text).replace(/[."“”‘’']/g,' ').replace(/[-–—]/g,' ').replace(/\s+/g,' ').trim();}
 function withTimeout(promise,ms,label){let timeoutId;const timeoutPromise=new Promise((_,reject)=>{timeoutId=setTimeout(()=>{const e=new Error(`Timeout after ${ms}ms: ${label}`);e.status=408;e.isTimeout=true;reject(e);},ms);});return Promise.race([promise,timeoutPromise]).finally(()=>clearTimeout(timeoutId));}
 function logDetailedError(context,err){console.error('['+context+']',err?.message||err);}
-const genAIClients=apiKeys.map(key=>new GoogleGenAI({apiKey:key}));
+const genAIClients=apiKeys.map(key=>new GoogleGenAI({apiKey:key,httpOptions:{timeout:REQUEST_TIMEOUT_MS}}));
 const YEMOT_API_BASE='https://www.call2all.co.il/ym/api';
 const YEMOT_TOKEN=(process.env.YEMOT_API_KEY||'').trim()||[process.env.YEMOT_API_USERNAME||'',process.env.YEMOT_API_PASSWORD||''].join(':');
 async function downloadYemotFile(path){
@@ -61,10 +61,10 @@ async function generateWithRetry(contents,useWebSearch=false){
  let lastError;
  for(let mi=0;mi<MODEL_NAMES.length;mi++) for(let ki=0;ki<genAIClients.length;ki++){
   try{
-   const config=useWebSearch?{tools:[{googleSearch:{}}]}:undefined;
-   return await withTimeout(genAIClients[ki].models.generateContent({model:MODEL_NAMES[mi],contents,config}),REQUEST_TIMEOUT_MS,MODEL_NAMES[mi]+' key #'+(ki+1));
+   const config=useWebSearch?{tools:[{googleSearch:{}}],thinkingConfig:{thinkingBudget:0}}:{thinkingConfig:{thinkingBudget:0}};
+   const started=Date.now(); const result=await genAIClients[ki].models.generateContent({model:MODEL_NAMES[mi],contents,config}); console.log('[Gemini] '+MODEL_NAMES[mi]+' key #'+(ki+1)+' completed in '+(Date.now()-started)+'ms'); return result;
   }catch(e){
-   lastError=e;
+   lastError=e; console.error('[Gemini] '+MODEL_NAMES[mi]+' key #'+(ki+1)+' failed: '+(e?.message||e));
    if(![404,503,429,500,408].includes(e.status)) throw e;
    await new Promise(r=>setTimeout(r,300));
   }
