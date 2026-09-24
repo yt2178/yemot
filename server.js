@@ -71,10 +71,17 @@ const YEMOT_API_BASE = 'https://www.call2all.co.il/ym/api';
 const YEMOT_TOKEN = (process.env.YEMOT_API_KEY || '').trim() || [process.env.YEMOT_API_USERNAME || '', process.env.YEMOT_API_PASSWORD || ''].join(':');
 
 async function downloadYemotFile(recordingPath) {
+  const started = Date.now();
   const qs = new URLSearchParams({ token: YEMOT_TOKEN, path: recordingPath });
   const response = await withTimeout(fetch(YEMOT_API_BASE + '/DownloadFile?' + qs), REQUEST_TIMEOUT_MS, 'Yemot DownloadFile');
-  if (!response.ok) throw new Error('Yemot DownloadFile HTTP ' + response.status + ': ' + await response.text());
-  return Buffer.from(await response.arrayBuffer());
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  const buffer = Buffer.from(await response.arrayBuffer());
+  console.log('[AUDIO_DOWNLOAD] status=' + response.status + ' content_type=' + contentType + ' bytes=' + buffer.length + ' elapsed_ms=' + (Date.now() - started));
+  if (!response.ok) throw new Error('Yemot DownloadFile HTTP ' + response.status + ' (' + contentType + ')');
+  const head = buffer.subarray(0, 32).toString('utf8').trim().toLowerCase();
+  if (head.startsWith('<!doctype html') || head.startsWith('<html') || head.startsWith('{"') || head.includes('requested file does not exist')) throw new Error('Yemot DownloadFile returned an error document instead of audio');
+  if (!buffer.length) throw new Error('Yemot DownloadFile returned an empty file');
+  return buffer;
 }
 function normalizeYemotRecordingPath(value) {
   let p = String(value || '').trim();
@@ -121,7 +128,15 @@ async function generateWithRetry(contents, useWebSearch = false) {
   throw lastError;
 }
 
-function audioMimeType(recordingPath = '') {
+function audioMimeType(recordingPath = '', audioBuffer = null) {
+  if (Buffer.isBuffer(audioBuffer) && audioBuffer.length >= 12) {
+    const head = audioBuffer.subarray(0, 12).toString('ascii');
+    if (head.startsWith('RIFF') && head.slice(8, 12) === 'WAVE') return 'audio/wav';
+    if (head.startsWith('OggS')) return 'audio/ogg';
+    if (head.startsWith('ID3') || (audioBuffer[0] === 0xff && (audioBuffer[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
+    if (head.startsWith('fLaC')) return 'audio/flac';
+    if (head.startsWith('FORM') && head.slice(8, 12) === 'AIFF') return 'audio/aiff';
+  }
   const configured = String(process.env.YEMOT_AUDIO_MIME_TYPE || '').trim();
   if (configured) return configured;
   const p = String(recordingPath || '').toLowerCase();
@@ -141,6 +156,10 @@ async function transcribeAudio(audioBuffer, recordingPath = '') {
   if (!Buffer.isBuffer(audioBuffer) || !audioBuffer.length) throw new Error('Empty Yemot recording');
   const sizeMb = audioBuffer.length / (1024 * 1024);
   if (sizeMb >= 19) throw new Error('Yemot recording is too large for inline Gemini audio');
+  const mime = audioMimeType(recordingPath, audioBuffer);
+  console.log('[AUDIO_VALIDATION] bytes=' + audioBuffer.length + ' mime=' + mime + ' magic=' + audioBuffer.subarray(0, 12).toString('hex'));
+  if (mime === 'audio/wav' && !(audioBuffer.subarray(0, 4).toString('ascii') === 'RIFF' && audioBuffer.subarray(8, 12).toString('ascii') === 'WAVE')) throw new Error('Downloaded recording is not a valid WAV');
+  if (mime === 'audio/ogg' && audioBuffer.subarray(0, 4).toString('ascii') !== 'OggS') throw new Error('Downloaded recording is not a valid OGG');
   const started = Date.now();
   const audioBase64 = audioBuffer.toString('base64');
   const prompt = `${EXCLUSIVE_INSTRUCTION}
@@ -153,7 +172,7 @@ async function transcribeAudio(audioBuffer, recordingPath = '') {
     role: 'user',
     parts: [
       { text: prompt },
-      { inlineData: { mimeType: audioMimeType(recordingPath), data: audioBase64 } }
+      { inlineData: { mimeType: mime, data: audioBase64 } }
     ]
   }]);
   const transcript = responseText(result).replace(/^["'“”]+|["'“”]+$/g, '').trim();
@@ -213,7 +232,8 @@ async function callHandler(call) {
         ? (openingPrompt || process.env.FIRST_CALL_MESSAGE || 'שלום איך אפשר לעזור לך היום אמור בבקשה על מה תרצה לדבר אחרי הצפצוף ולסיום ההקלטה הקש סולמית')
         : 'אמור שאלה נוספת ולסיום הקש סולמית או הקש כוכבית ליציאה';
       firstTurn = false;
-      const recordPath = await call.read([{ type: 'text', data: prompt }], 'record', { min_length: 1, max_length: 60, no_confirm_menu: true });
+      console.log('[YEMOT_REQUEST] call_id=' + String(callId || '') + ' extension=' + String(call?.values?.ApiExtension || '') + ' value_keys=' + Object.keys(call?.values || {}).filter(k => !/token|password|key|secret/i.test(k)).join(','));
+      const recordPath = await call.read([{ type: 'text', data: prompt }], 'record', { length_min: 1, length_max: 60, no_confirm_menu: true });
       if (!recordPath || recordPath === 'None') return call.id_list_message([{ type: 'text', data: 'לא נקלט דבר להתראות' }]);
 
       const active = activeCalls.get(activeKey);
@@ -222,7 +242,8 @@ async function callHandler(call) {
       let audioBuffer;
       try {
         const normalizedRecordPath = normalizeYemotRecordingPath(recordPath);
-        console.log('[Yemot] recording received path=' + normalizedRecordPath + ' mime=' + audioMimeType(normalizedRecordPath));
+        console.log('[YEMOT_REQUEST] recording_path=' + normalizedRecordPath);
+        console.log('[AUDIO_DOWNLOAD] starting');
         audioBuffer = await downloadYemotFile(normalizedRecordPath);
       } catch (e) {
         logDetailedError('recording download', e);
@@ -234,20 +255,27 @@ async function callHandler(call) {
       let replyText = '';
       try {
         if (active) active.status = 'מתמלל';
-        transcript = await transcribeAudio(audioBuffer, recordPath);
+        console.log('[TRANSCRIPTION] starting');
+        transcript = await withTimeout(transcribeAudio(audioBuffer, recordPath), REQUEST_TIMEOUT_MS, 'Gemini transcription');
+        console.log('[TRANSCRIPTION] text_length=' + transcript.length);
         const needsWeb = wantsWebSearch(transcript);
         if (active) active.status = needsWeb ? 'מבצע חיפוש באינטרנט' : 'מכין תשובה';
         console.log('[Routing] needs_web=' + needsWeb + ' query=' + JSON.stringify(transcript));
-        replyText = await answerTextQuestion(transcript, needsWeb, transcript);
+        console.log('[GEMINI] starting web_search=' + needsWeb);
+        replyText = await withTimeout(answerTextQuestion(transcript, needsWeb, transcript), REQUEST_TIMEOUT_MS, needsWeb ? 'Gemini web search' : 'Gemini answer');
+        console.log('[GEMINI] response_length=' + replyText.length);
         if (needsWeb) console.log('[Web Search] requested for:', JSON.stringify(transcript));
       } catch (e) {
         logDetailedError('AI processing', e);
         replyText = e.status === 429 || e.status === 503 ? 'מצטערים אני עמוס כרגע נסה שוב עוד מעט' : e.status === 408 ? 'מצטערים לקח יותר מדי זמן לענות נסה שוב' : 'מצטער הייתה תקלה בעיבוד השאלה אפשר לנסות שוב';
       }
 
+      console.log('[TTS] preparing text_length=' + String(replyText || '').length);
       replyText = sanitizeForYemot(replyText) || 'מצטער לא הצלחתי לנסח תשובה נסה שוב';
+      console.log('[TTS] ready text_length=' + replyText.length);
       try {
         await addConversationEntry({ phone: callerPhone, callId, userText: transcript, geminiText: replyText });
+        console.log('[YEMOT_RESPONSE] type=text response_length=' + replyText.length);
         await call.id_list_message([{ type: 'text', data: replyText }], { prependToNextAction: true });
       } catch (e) {
         logDetailedError('playback', e);
