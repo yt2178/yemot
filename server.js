@@ -221,7 +221,9 @@ async function callHandler(call) {
 
       let audioBuffer;
       try {
-        const normalizedRecordPath = normalizeYemotRecordingPath(recordPath);\n        console.log('[Yemot] recording received path=' + normalizedRecordPath + ' mime=' + audioMimeType(normalizedRecordPath));\n        audioBuffer = await downloadYemotFile(normalizedRecordPath);
+        const normalizedRecordPath = normalizeYemotRecordingPath(recordPath);
+        console.log('[Yemot] recording received path=' + normalizedRecordPath + ' mime=' + audioMimeType(normalizedRecordPath));
+        audioBuffer = await downloadYemotFile(normalizedRecordPath);
       } catch (e) {
         logDetailedError('recording download', e);
         await call.id_list_message([{ type: 'text', data: 'מצטערים הייתה בעיה בקבלת ההקלטה נסה שוב' }], { prependToNextAction: true });
