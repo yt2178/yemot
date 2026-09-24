@@ -301,18 +301,6 @@ app.get('/api/conversations', (req, res) => res.json({
   serverTime: new Date().toISOString()
 }));
 app.get('/health', (req, res) => res.json({ ok: true }));
-app.get('/internal/e2e', async (req, res) => {
-  if (process.env.E2E_HARNESS_ENABLED !== '1') return res.status(404).json({ ok: false });
-  try {
-    const { runE2E } = await import('./scripts/e2e.js?run=' + Date.now());
-    await runE2E();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('[E2E] FAILED', e?.stack || e);
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
-  }
-});
-
 app.get('/', (req, res) => res.type('html').send('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>AI Phone Line</title></head><body><h1>AI Phone Line Dashboard</h1><p>המערכת מחוברת וממתינה לשיחות</p></body></html>'));
 
 async function runGeminiSelfTest() {
@@ -372,16 +360,4 @@ export {
   downloadYemotFile, withTimeout, startServer
 };
 
-if (process.env.NODE_ENV !== 'test' && process.env.E2E_HARNESS_MODE !== '1') {
-  if (process.env.E2E_ON_START === '1') {
-    startServer()
-      .then(() => {
-        process.env.E2E_USE_RUNNING_SERVER = '1';
-        return import('./scripts/e2e.js?startup=' + Date.now()).then(({ runE2E }) => runE2E());
-      })
-      .then(() => console.log('[E2E_ON_START] PASS'))
-      .catch(err => { console.error('[E2E_ON_START] FAILED', err?.stack || err); process.exit(1); });
-  } else {
-    startServer();
-  }
-}
+if (process.env.NODE_ENV !== 'test') startServer();
