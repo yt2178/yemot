@@ -372,4 +372,13 @@ export {
   downloadYemotFile, withTimeout, startServer
 };
 
-if (process.env.NODE_ENV !== 'test' && process.env.E2E_HARNESS_MODE !== '1') startServer();
+if (process.env.NODE_ENV !== 'test' && process.env.E2E_HARNESS_MODE !== '1') {
+  if (process.env.E2E_ON_START === '1') {
+    import('./scripts/e2e.js?startup=' + Date.now())
+      .then(({ runE2E }) => runE2E())
+      .then(() => { console.log('[E2E_ON_START] PASS'); return startServer(); })
+      .catch(err => { console.error('[E2E_ON_START] FAILED', err?.stack || err); process.exit(1); });
+  } else {
+    startServer();
+  }
+}
