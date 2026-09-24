@@ -4,7 +4,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test:e2e": "node scripts/e2e.js"
   },
   "engines": {
     "node": ">=18"
