@@ -44,6 +44,7 @@ async function httpGet(base, path) {
   return { status: r.status, text: await r.text(), headers: r.headers };
 }
 
+export async function runE2E() {
 const fixture = await downloadFixture();
 console.log('FIXTURE: ' + fixture.name + ' bytes=' + fixture.buffer.length);
 process.env.E2E_HARNESS_MODE = '1';
@@ -133,3 +134,9 @@ try {
 
 if (process.exitCode) process.exit(process.exitCode);
 console.log('E2E HARNESS COMPLETE: PASS');
+
+}
+
+if (process.argv[1] && process.argv[1].endsWith('/scripts/e2e.js')) {
+  runE2E().catch(err => { fail('E2E_HARNESS', err); process.exit(1); });
+}
