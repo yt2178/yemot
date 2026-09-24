@@ -234,7 +234,7 @@ async function callHandler(call) {
         : 'אמור שאלה נוספת ולסיום הקש סולמית או הקש כוכבית ליציאה';
       firstTurn = false;
       console.log('[YEMOT_REQUEST] call_id=' + String(callId || '') + ' extension=' + String(call?.values?.ApiExtension || '') + ' value_keys=' + Object.keys(call?.values || {}).filter(k => !/token|password|key|secret/i.test(k)).join(','));
-      const recordPath = await call.read([{ type: 'text', data: prompt }], 'record', { length_min: 1, length_max: 60, no_confirm_menu: true });
+      const recordPath = await call.read([{ type: 'text', data: prompt }], 'record', { min_length: 1, max_length: 60, no_confirm_menu: true });
       if (!recordPath || recordPath === 'None') return call.id_list_message([{ type: 'text', data: 'לא נקלט דבר להתראות' }]);
 
       const active = activeCalls.get(activeKey);
