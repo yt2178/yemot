@@ -3,12 +3,16 @@
   "version": "1.1.1",
   "type": "module",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^5.2.1",
     "yemot-router2": "^6.2.3",
-    "@google/genai": "^1.24.0",
+    "@google/genai": "2.24.0",
     "yemot-api": "^3.2.0"
   }
 }
