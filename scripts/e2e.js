@@ -90,10 +90,10 @@ try {
   const hangup = await httpGet(base, '/yemot' + q + '&hangup=yes');
   if (hangup.status !== 200 || !hangup.text.includes('hangup')) throw new Error('Hangup continuation failed: ' + hangup.text);
   
-  const web = wantsWebSearch('מה מזג האוויר היום בפתח תקווה');
+  const web = wantsWebSearch('היום מה מזג האוויר בפתח תקווה');
   if (!web) throw new Error('needs_web routing predicate did not trigger');
   pass('WEB_SEARCH', 'route selected needs_web=true');
-  const webAnswer = await answerTextQuestion('מה מזג האוויר היום בפתח תקווה', true);
+  const webAnswer = await answerTextQuestion('היום מה מזג האוויר בפתח תקווה', true);
   if (!webAnswer || webAnswer.length < 5) throw new Error('Gemini Search grounding returned empty answer');
   pass('WEB_SEARCH', 'real Gemini Google Search grounding');
 
