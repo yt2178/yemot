@@ -120,8 +120,14 @@ async function generateWithRetry(contents, useWebSearch = false) {
     } catch (e) {
       lastError = e;
       const status = e?.status;
-      const retryable = [408, 429, 500, 502, 503, 504].includes(status) || e?.name === 'AbortError' || /aborted|timeout/i.test(String(e?.message || ''));
-      console.error('[Gemini] ' + MODEL_NAMES[mi] + ' key #' + (ki + 1) + ' failed status=' + String(status || '') + ': ' + (e?.message || e));
+      const message = String(e?.message || e);
+      const isQuotaError = status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(message);
+      const retryable = [408, 429, 500, 502, 503, 504].includes(status) || e?.name === 'AbortError' || /aborted|timeout/i.test(message);
+      if (isQuotaError) {
+        console.error('[GEMINI_QUOTA_EXHAUSTED] model=' + MODEL_NAMES[mi] + ' key=#' + (ki + 1) + ' status=' + String(status || '') + ' message=' + message);
+      } else {
+        console.error('[Gemini] ' + MODEL_NAMES[mi] + ' key #' + (ki + 1) + ' failed status=' + String(status || '') + ': ' + message);
+      }
       if (!retryable) throw e;
       await new Promise(r => setTimeout(r, 300));
     }
@@ -184,8 +190,12 @@ async function transcribeAudio(audioBuffer, recordingPath = '') {
 
 function wantsWebSearch(transcript) {
   const t = String(transcript || '').trim();
-  return /(?:תחפש|חפש|חיפוש|תבדוק(?:\s+לי)?|בדוק(?:\s+לי)?|תבדקי|בדקי|בדיקה)\s*(?:באינטרנט|ברשת|בגוגל|באינטרנט בבקשה)?|(?:באינטרנט|ברשת|בגוגל)\s*(?:תחפש|חפש|תבדוק|בדוק)?/i.test(t)
-    || /מה\s+(?:החדשות|קרה|קרה היום|היה היום)|(?:היום|עכשיו|כרגע|אתמול|מחר).*(?:מחיר|מזג|מזג האוויר|חדשות|תוצאה|תוצאות|שער|שקל|דולר|יורו|אירוע)/i.test(t);
+  if (!t) return false;
+
+  const explicitSearch = /(?:תחפש|חפש|תבדוק|בדוק|תבדקי|בדקי|חיפוש)\s+(?:באינטרנט|ברשת|בגוגל)(?:\s|$)|(?:באינטרנט|ברשת|בגוגל)\s+(?:תחפש|חפש|תבדוק|בדוק|תבדקי|בדקי)(?:\s|$)/i;
+  const currentInfo = /(?:היום|עכשיו|כרגע|אתמול|מחר)\b.*(?:חדשות|קרה|מחיר|עלות|שער|מזג(?:\s+האוויר)?|תוצאה|תוצאות|אירוע|זכה|זכו|ניצח|ניצחו)|(?:חדשות|מחיר|שער|מזג(?:\s+האוויר)?|תוצאה|תוצאות)\b.*(?:היום|עכשיו|כרגע|אתמול|מחר)\b/i;
+
+  return explicitSearch.test(t) || currentInfo.test(t);
 }
 
 async function answerTextQuestion(transcript, useWebSearch = false) {
@@ -267,8 +277,20 @@ async function callHandler(call) {
         console.log('[GEMINI] response_length=' + replyText.length);
         if (needsWeb) console.log('[Web Search] requested for:', JSON.stringify(transcript));
       } catch (e) {
-        logDetailedError('AI processing', e);
-        replyText = e.status === 429 || e.status === 503 ? 'מצטערים אני עמוס כרגע נסה שוב עוד מעט' : e.status === 408 ? 'מצטערים לקח יותר מדי זמן לענות נסה שוב' : 'מצטער הייתה תקלה בעיבוד השאלה אפשר לנסות שוב';
+        const errorMessage = String(e?.message || e);
+        if (e?.status === 429 || /RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(errorMessage)) {
+          console.error('[GEMINI_QUOTA_EXHAUSTED] stage=AI_processing web_search=' + needsWeb + ' error=' + errorMessage);
+          replyText = needsWeb
+            ? 'מצטערים שירות ה AI עמוס כרגע ולא ניתן לבצע את החיפוש נסה שוב עוד מעט'
+            : 'מצטערים שירות ה AI עמוס כרגע נסה שוב עוד מעט';
+        } else {
+          logDetailedError('AI processing', e);
+          replyText = e.status === 503
+            ? 'מצטערים שירות ה AI עמוס כרגע נסה שוב עוד מעט'
+            : e.status === 408
+            ? 'מצטערים לקח יותר מדי זמן לענות נסה שוב'
+            : 'מצטער הייתה תקלה בעיבוד השאלה אפשר לנסות שוב';
+        }
       }
 
       console.log('[TTS] preparing text_length=' + String(replyText || '').length);
