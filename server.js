@@ -67,7 +67,7 @@ function withTimeout(promise, ms, label) {
 function logDetailedError(context, err) { console.error('[' + context + ']', err?.message || err); }
 
 const genAIClients = apiKeys.map(key => new GoogleGenAI({ apiKey: key, httpOptions: { timeout: REQUEST_TIMEOUT_MS } }));
-const YEMOT_API_BASE = 'https://www.call2all.co.il/ym/api';
+const YEMOT_API_BASE = (process.env.YEMOT_API_BASE_URL || 'https://www.call2all.co.il/ym/api').replace(/\/$/, '');
 const YEMOT_TOKEN = (process.env.YEMOT_API_KEY || '').trim() || [process.env.YEMOT_API_USERNAME || '', process.env.YEMOT_API_PASSWORD || ''].join(':');
 
 async function downloadYemotFile(recordingPath) {
@@ -343,10 +343,20 @@ async function configureYemotStructure() {
 
 process.on('unhandledRejection', reason => { if (!(reason instanceof ExitError)) logDetailedError('Unhandled Rejection', reason); });
 process.on('uncaughtException', err => { if (!(err instanceof ExitError)) logDetailedError('Uncaught Exception', err); });
-const port = process.env.PORT || 3000;
-app.listen(port, async () => {
-  console.log('server running on port ' + port);
-  await loadConversationLog();
-  await runGeminiSelfTest();
-  try { await configureYemotStructure(); } catch (e) { logDetailedError('Yemot automatic setup', e); }
-});
+async function startServer() {
+  const port = process.env.PORT || 3000;
+  return app.listen(port, async () => {
+    console.log('server running on port ' + port);
+    await loadConversationLog();
+    await runGeminiSelfTest();
+    try { await configureYemotStructure(); } catch (e) { logDetailedError('Yemot automatic setup', e); }
+  });
+}
+
+export {
+  app, router, callHandler, normalizeYemotRecordingPath, audioMimeType,
+  transcribeAudio, answerTextQuestion, wantsWebSearch, sanitizeForYemot,
+  downloadYemotFile, withTimeout, startServer
+};
+
+if (process.env.NODE_ENV !== 'test' && process.env.E2E_HARNESS_MODE !== '1') startServer();
