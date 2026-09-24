@@ -1,0 +1,28 @@
+name: Render E2E
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render
+        env:
+          URL: https://yemot-f7pu.onrender.com
+        run: |
+          for i in {1..30}; do
+            if curl -fsS "$URL/health" >/dev/null; then
+              echo "Render health: PASS"
+              break
+            fi
+            sleep 10
+          done
+          curl -fsS "$URL/health"
+      - name: Run deployed E2E harness
+        env:
+          URL: https://yemot-f7pu.onrender.com/internal/e2e
+        run: |
+          curl --fail-with-body --max-time 600 -sS "$URL"
