@@ -67,13 +67,14 @@ function withTimeout(promise, ms, label) {
 function logDetailedError(context, err) { console.error('[' + context + ']', err?.message || err); }
 
 const genAIClients = apiKeys.map(key => new GoogleGenAI({ apiKey: key, httpOptions: { timeout: REQUEST_TIMEOUT_MS } }));
-const YEMOT_API_BASE = (process.env.YEMOT_API_BASE_URL || 'https://www.call2all.co.il/ym/api').replace(/\/$/, '');
+const YEMOT_API_DEFAULT = 'https://www.call2all.co.il/ym/api';
+function yemotApiBase() { return (process.env.YEMOT_API_BASE_URL || YEMOT_API_DEFAULT).replace(/\/$/, ''); }
 const YEMOT_TOKEN = (process.env.YEMOT_API_KEY || '').trim() || [process.env.YEMOT_API_USERNAME || '', process.env.YEMOT_API_PASSWORD || ''].join(':');
 
 async function downloadYemotFile(recordingPath) {
   const started = Date.now();
   const qs = new URLSearchParams({ token: YEMOT_TOKEN, path: recordingPath });
-  const response = await withTimeout(fetch(YEMOT_API_BASE + '/DownloadFile?' + qs), REQUEST_TIMEOUT_MS, 'Yemot DownloadFile');
+  const response = await withTimeout(fetch(yemotApiBase() + '/DownloadFile?' + qs), REQUEST_TIMEOUT_MS, 'Yemot DownloadFile');
   const contentType = String(response.headers.get('content-type') || '').toLowerCase();
   const buffer = Buffer.from(await response.arrayBuffer());
   console.log('[AUDIO_DOWNLOAD] status=' + response.status + ' content_type=' + contentType + ' bytes=' + buffer.length + ' elapsed_ms=' + (Date.now() - started));
@@ -300,6 +301,18 @@ app.get('/api/conversations', (req, res) => res.json({
   serverTime: new Date().toISOString()
 }));
 app.get('/health', (req, res) => res.json({ ok: true }));
+app.get('/internal/e2e', async (req, res) => {
+  if (process.env.E2E_HARNESS_ENABLED !== '1') return res.status(404).json({ ok: false });
+  try {
+    const { runE2E } = await import('./scripts/e2e.js?run=' + Date.now());
+    await runE2E();
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[E2E] FAILED', e?.stack || e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
 app.get('/', (req, res) => res.type('html').send('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>AI Phone Line</title></head><body><h1>AI Phone Line Dashboard</h1><p>המערכת מחוברת וממתינה לשיחות</p></body></html>'));
 
 async function runGeminiSelfTest() {
@@ -321,7 +334,7 @@ async function configureYemotStructure() {
   if (!publicUrl) { console.log('PUBLIC_BASE_URL missing; skipping automatic IVR URL setup'); return; }
   async function yemotApiJson(action, params = {}) {
     const qs = new URLSearchParams({ token: YEMOT_TOKEN, ...params });
-    const r = await withTimeout(fetch(YEMOT_API_BASE + '/' + action + '?' + qs), REQUEST_TIMEOUT_MS, 'Yemot ' + action);
+    const r = await withTimeout(fetch(yemotApiBase() + '/' + action + '?' + qs), REQUEST_TIMEOUT_MS, 'Yemot ' + action);
     const t = await r.text();
     if (!r.ok) throw new Error(action + ' HTTP ' + r.status + ': ' + t);
     let d; try { d = JSON.parse(t); } catch { throw new Error(action + ' returned non-JSON: ' + t.slice(0, 200)); }
