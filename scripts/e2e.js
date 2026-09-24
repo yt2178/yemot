@@ -61,11 +61,17 @@ try {
   if (audioMimeType(fixture.name, fixture.buffer) !== 'audio/wav') throw new Error('WAV magic detection failed');
   pass('AUDIO_VALIDATION');
 
-  const appServer = await new Promise(resolve => {
-    const s = app.listen(0, '127.0.0.1', () => resolve(s));
-  });
-  const appPort = appServer.address().port;
-  const base = 'http://127.0.0.1:' + appPort;
+  let appServer = null;
+  let base;
+  if (process.env.E2E_USE_RUNNING_SERVER === '1') {
+    base = 'http://127.0.0.1:' + (process.env.PORT || '10000');
+  } else {
+    appServer = await new Promise(resolve => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const appPort = appServer.address().port;
+    base = 'http://127.0.0.1:' + appPort;
+  }
   const q = '?ApiPhone=0500000000&ApiDID=0795695500&ApiExtension=8&ApiCallId=e2e-' + Date.now();
 
   const first = await httpGet(base, '/yemot' + q);
@@ -116,7 +122,7 @@ try {
   }
   pass('FAILURE_TIMEOUTS');
 
-  await new Promise(r => appServer.close(r));
+  if (appServer) await new Promise(r => appServer.close(r));
 } finally {
   await new Promise(r => downloadServer.close(r));
 }
