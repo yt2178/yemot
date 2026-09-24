@@ -121,11 +121,23 @@ async function generateWithRetry(contents, useWebSearch = false) {
   throw lastError;
 }
 
-function audioMimeType() {
-  return process.env.YEMOT_AUDIO_MIME_TYPE || 'audio/wav';
+function audioMimeType(recordingPath = '') {
+  const configured = String(process.env.YEMOT_AUDIO_MIME_TYPE || '').trim();
+  if (configured) return configured;
+  const p = String(recordingPath || '').toLowerCase();
+  if (p.endsWith('.opus')) return 'audio/opus';
+  if (p.endsWith('.mp3')) return 'audio/mp3';
+  if (p.endsWith('.ogg')) return 'audio/ogg';
+  if (p.endsWith('.m4a')) return 'audio/m4a';
+  if (p.endsWith('.flac')) return 'audio/flac';
+  if (p.endsWith('.aac')) return 'audio/aac';
+  if (p.endsWith('.webm')) return 'audio/webm';
+  if (p.endsWith('.alaw')) return 'audio/alaw';
+  if (p.endsWith('.mulaw')) return 'audio/mulaw';
+  return 'audio/wav';
 }
 
-async function transcribeAudio(audioBuffer) {
+async function transcribeAudio(audioBuffer, recordingPath = '') {
   if (!Buffer.isBuffer(audioBuffer) || !audioBuffer.length) throw new Error('Empty Yemot recording');
   const sizeMb = audioBuffer.length / (1024 * 1024);
   if (sizeMb >= 19) throw new Error('Yemot recording is too large for inline Gemini audio');
@@ -141,7 +153,7 @@ async function transcribeAudio(audioBuffer) {
     role: 'user',
     parts: [
       { text: prompt },
-      { inlineData: { mimeType: audioMimeType(), data: audioBase64 } }
+      { inlineData: { mimeType: audioMimeType(recordingPath), data: audioBase64 } }
     ]
   }]);
   const transcript = responseText(result).replace(/^["'“”]+|["'“”]+$/g, '').trim();
@@ -209,7 +221,7 @@ async function callHandler(call) {
 
       let audioBuffer;
       try {
-        audioBuffer = await downloadYemotFile(normalizeYemotRecordingPath(recordPath));
+        const normalizedRecordPath = normalizeYemotRecordingPath(recordPath);\n        console.log('[Yemot] recording received path=' + normalizedRecordPath + ' mime=' + audioMimeType(normalizedRecordPath));\n        audioBuffer = await downloadYemotFile(normalizedRecordPath);
       } catch (e) {
         logDetailedError('recording download', e);
         await call.id_list_message([{ type: 'text', data: 'מצטערים הייתה בעיה בקבלת ההקלטה נסה שוב' }], { prependToNextAction: true });
@@ -220,7 +232,7 @@ async function callHandler(call) {
       let replyText = '';
       try {
         if (active) active.status = 'מתמלל';
-        transcript = await transcribeAudio(audioBuffer);
+        transcript = await transcribeAudio(audioBuffer, recordPath);
         const needsWeb = wantsWebSearch(transcript);
         if (active) active.status = needsWeb ? 'מבצע חיפוש באינטרנט' : 'מכין תשובה';
         console.log('[Routing] needs_web=' + needsWeb + ' query=' + JSON.stringify(transcript));
@@ -266,7 +278,7 @@ async function runGeminiSelfTest() {
     const started = Date.now();
     const result = await generateWithRetry([{ role: 'user', parts: [{ text: 'ענה רק: OK' }] }]);
     const text = responseText(result);
-    if (!/\\bOK\\b/i.test(text)) throw new Error('Unexpected self-test response: ' + text.slice(0, 80));
+    if (!/\bOK\b/i.test(text)) throw new Error('Unexpected self-test response: ' + text.slice(0, 80));
     console.log('[Self-test] Gemini API/model OK in ' + (Date.now() - started) + 'ms');
   } catch (e) {
     console.error('[Self-test] Gemini API/model FAILED: ' + (e?.message || e));
