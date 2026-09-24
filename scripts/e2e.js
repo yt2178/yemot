@@ -7,21 +7,10 @@ function pass(stage, detail = '') { console.log(stage + ': PASS' + (detail ? ' '
 function fail(stage, err) { console.error('FAILED: ' + stage); console.error('REASON: ' + (err?.stack || err?.message || err)); process.exitCode = 1; }
 
 async function downloadFixture() {
-  const r = await fetch(FIXTURE_URL);
-  if (!r.ok) throw new Error('OpenSLR fixture HTTP ' + r.status);
-  const gz = Buffer.from(await r.arrayBuffer());
-  const tar = gunzipSync(gz);
-  for (let off = 0; off + 512 <= tar.length; ) {
-    const name = tar.subarray(off, off + 100).toString('utf8').replace(/\0.*$/, '');
-    if (!name) break;
-    const sizeText = tar.subarray(off + 124, off + 136).toString('ascii').replace(/\0.*$/, '').trim();
-    const size = parseInt(sizeText || '0', 8);
-    const start = off + 512;
-    const end = start + size;
-    if (name.toLowerCase().endsWith('.wav')) return { name, buffer: Buffer.from(tar.subarray(start, end)) };
-    off = start + Math.ceil(size / 512) * 512;
-  }
-  throw new Error('No WAV found in OpenSLR archive');
+  const url = 'https://raw.githubusercontent.com/koudounasalkis/Audio-Speech-Tutorial/a842462b1738967af177e3394ec0886106fd4385/_sample_data/yes_no/waves_yesno/1_1_1_0_1_0_1_0.wav';
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('Speech fixture HTTP ' + r.status);
+  return { name: '1_1_1_0_1_0_1_0.wav', buffer: Buffer.from(await r.arrayBuffer()) };
 }
 
 function startDownloadFileMock(audio) {
